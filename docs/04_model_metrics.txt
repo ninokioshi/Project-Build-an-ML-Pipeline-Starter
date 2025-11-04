@@ -1,0 +1,7 @@
+=== Model Evaluation Results ===
+MAE:  33.526
+RMSE: 47.100
+R²:   0.568
+
+These metrics were computed on the validation set using the exported Random Forest model.
+The results indicate moderate predictive accuracy, suggesting the model captures key trends but could be further optimized.

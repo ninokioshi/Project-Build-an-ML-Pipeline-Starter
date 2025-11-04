@@ -19,7 +19,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OrdinalEncoder, FunctionTransformer, OneHotEncoder
 
-import wandb
+# import wandb
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error
 from sklearn.pipeline import Pipeline, make_pipeline
@@ -40,7 +40,7 @@ logger = logging.getLogger()
 
 def go(args):
 
-    run = wandb.init(job_type="train_random_forest")
+    # run = wandb.init(job_type="train_random_forest")
     run.config.update(args)
 
     # Get the Random Forest configuration and update W&B
@@ -289,3 +289,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     go(args)
+
+print(f"MAE: {mae}, R2: {r2}, RMSE: {rmse}")
