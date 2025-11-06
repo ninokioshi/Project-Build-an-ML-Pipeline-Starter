@@ -1,0 +1,19 @@
+name: data_split
+
+conda_env: conda.yml
+
+entry_points:
+  main:
+    parameters:
+      input_artifact: {type: str}
+      test_size: {type: float, default: 0.2}
+      val_size: {type: float, default: 0.2}
+      stratify_by: {type: str, default: neighbourhood_group}
+      random_seed: {type: int, default: 42}
+    command: >
+      python run.py
+      --input_artifact {input_artifact}
+      --test_size {test_size}
+      --val_size {val_size}
+      --stratify_by {stratify_by}
+      --random_seed {random_seed}
