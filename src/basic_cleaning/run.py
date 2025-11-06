@@ -1,119 +1,129 @@
-#!/usr/bin/env python
 """
-Basic cleaning: read input data, filter/clean, and (optionally) log a cleaned artifact.
-When W&B is offline, we read local 'sample.csv' instead of using artifacts.
+Basic cleaning step.
+
+- Reads the input CSV (artifact name or local file).
+- Filters rows by price range.
+- Removes rows outside the NYC lat/lon bounding box.
+- Saves the cleaned CSV as the specified output artifact.
+- Also writes a copy to the project root so downstream steps can read it locally.
+
+Run via MLflow entry point with parameters in MLproject.
 """
+
 import argparse
-import logging
 import os
+from pathlib import Path
 import pandas as pd
 
-# Only import wandb when available; we won't require it in offline mode
-try:
-    import wandb
-except Exception:
-    wandb = None
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
-logger = logging.getLogger()
+# ---- NYC bounding box (approx) ----
+LAT_MIN, LAT_MAX = 40.3, 41.2
+LON_MIN, LON_MAX = -74.3, -73.5
+# -----------------------------------
 
 
-def is_offline():
-    # Treat option 3 selection and general env toggles as offline
-    return (
-        os.environ.get("WANDB_MODE", "").lower() == "offline"
-        or os.environ.get("WANDB_DISABLED", "").lower() == "true"
-        or os.environ.get("WANDB_DISABLE_CODE", "")  # some envs use this
+def _resolve_input_path(input_artifact: str) -> Path:
+    """
+    Resolve a readable CSV path from an artifact string or local file.
+
+    Args:
+        input_artifact (str): e.g., "sample1.csv:latest" or "sample.csv"
+
+    Returns:
+        Path: existing path to a CSV file
+    """
+    # 1) Direct filename from the artifact (strip possible :version)
+    candidate = Path(input_artifact.split(":")[0])
+    if candidate.exists():
+        return candidate
+
+    # 2) Common fallbacks when running offline / local
+    here = Path(__file__).resolve().parent
+    for p in [
+        here / "sample.csv",
+        Path.cwd() / "sample.csv",
+        Path(__file__).resolve().parents[2] / "sample.csv",  # project root
+    ]:
+        if p.exists():
+            return p
+
+    raise FileNotFoundError(
+        f"Could not locate input CSV. Tried: {candidate}, 'sample.csv' in working dirs."
     )
 
 
-# DO NOT MODIFY signature used by mlflow
-def go(args):
-    offline = is_offline()
+def go(
+    input_artifact: str,
+    output_artifact: str,
+    output_type: str,
+    output_description: str,
+    min_price: float,
+    max_price: float,
+) -> None:
+    """
+    Clean the dataset.
 
-    # --- Input data ---
-    if offline or wandb is None:
-        logger.info("W&B offline detected: reading local 'sample.csv'")
-        input_path = "sample.csv"
-    else:
-        logger.info("W&B online detected: using artifact %s", args.input_artifact)
-        run = wandb.init(project="nyc_airbnb", job_type="basic_cleaning", group="cleaning", save_code=True)
-        input_path = run.use_artifact(args.input_artifact).file()
-
+    Args:
+        input_artifact (str): Input CSV artifact name or local filename.
+        output_artifact (str): Output CSV filename to write (e.g., clean_sample.csv).
+        output_type (str): Artifact type (kept for compatibility/logging).
+        output_description (str): Description (kept for compatibility/logging).
+        min_price (float): Minimum allowed price (inclusive).
+        max_price (float): Maximum allowed price (inclusive).
+    """
+    print(f"Reading input: {input_artifact}")
+    input_path = _resolve_input_path(input_artifact)
     df = pd.read_csv(input_path)
 
-    # --- Cleaning ---
-    # Price range
-    idx = df["price"].between(args.min_price, args.max_price)
-    df = df[idx].copy()
+    # ---- Price range filter ----
+    before = len(df)
+    if "price" in df.columns:
+        df = df[df["price"].between(min_price, max_price, inclusive="both")]
+    after = len(df)
+    print(f"Price filter [{min_price}, {max_price}] removed {before - after} rows (kept {after}).")
 
-    # Dates
-    if "last_review" in df.columns:
-        df["last_review"] = pd.to_datetime(df["last_review"])
+    # ---- NYC boundary filter (new for v1.0.1) ----
+    if {"latitude", "longitude"}.issubset(df.columns):
+        before = len(df)
+        df = df[
+            df["latitude"].between(LAT_MIN, LAT_MAX, inclusive="both")
+            & df["longitude"].between(LON_MIN, LON_MAX, inclusive="both")
+        ]
+        after = len(df)
+        print(f"NYC boundary filter removed {before - after} rows (kept {after}).")
+    else:
+        print("Warning: 'latitude'/'longitude' columns not found; skipping NYC boundary filter.")
 
-    # NYC bounds
-    if "longitude" in df.columns and "latitude" in df.columns:
-        idx = df["longitude"].between(-74.25, -73.50) & df["latitude"].between(40.5, 41.2)
-        df = df[idx].copy()
+    # ---- Save outputs ----
+    out_path = Path(output_artifact)
+    df.to_csv(out_path, index=False)
+    print(f"Wrote cleaned data to {out_path}")
 
-    # Save cleaned CSV
-    output_csv = "clean_sample.csv"
-    df.to_csv(output_csv, index=False)
-    logger.info("Wrote cleaned data to %s", output_csv)
-
-    # --- Optional artifact logging ---
-    if not offline and wandb is not None:
-        logger.info("Logging cleaned artifact to W&B")
-        run = wandb.run or wandb.init(project="nyc_airbnb", job_type="basic_cleaning")
-        artifact = wandb.Artifact(
-            args.output_artifact,
-            type=args.output_type,
-            description=args.output_description,
-        )
-        artifact.add_file(output_csv)
-        run.log_artifact(artifact)
-        # Do NOT call artifact.wait() in offline/online mixed contexts
+    # Also write a copy to the project root so downstream steps (running in temp dirs)
+    # can reliably read '../../clean_sample.csv' as used in data_split.
+    proj_root_copy = Path(__file__).resolve().parents[2] / out_path.name
+    try:
+        df.to_csv(proj_root_copy, index=False)
+        print(f"Copied cleaned data to project root: {proj_root_copy}")
+    except Exception as e:
+        print(f"Note: could not copy cleaned data to project root: {e}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="A very basic data cleaning")
-
-    parser.add_argument(
-        "--input_artifact",
-        type=str,
-        help="Name of the input artifact to download from Weights & Biases (ignored in offline mode)",
-        required=True,
-    )
-    parser.add_argument(
-        "--output_artifact",
-        type=str,
-        help="Name of the cleaned dataset artifact to be created",
-        required=True,
-    )
-    parser.add_argument(
-        "--output_type",
-        type=str,
-        help="Type of the output artifact (e.g., 'clean_data')",
-        required=True,
-    )
-    parser.add_argument(
-        "--output_description",
-        type=str,
-        help="Description of the output artifact contents",
-        required=True,
-    )
-    parser.add_argument(
-        "--min_price",
-        type=float,
-        help="Minimum price threshold for valid listings",
-        required=True,
-    )
-    parser.add_argument(
-        "--max_price",
-        type=float,
-        help="Maximum price threshold for valid listings",
-        required=True,
-    )
-
+    parser = argparse.ArgumentParser(description="Basic data cleaning with NYC boundary filter.")
+    parser.add_argument("--input_artifact", type=str, required=True, help="Input CSV (artifact or file)")
+    parser.add_argument("--output_artifact", type=str, required=True, help="Output CSV filename")
+    parser.add_argument("--output_type", type=str, required=True, help="Artifact type (kept for compatibility)")
+    parser.add_argument("--output_description", type=str, required=True, help="Description (kept for compatibility)")
+    parser.add_argument("--min_price", type=float, required=True, help="Minimum allowed price")
+    parser.add_argument("--max_price", type=float, required=True, help="Maximum allowed price")
     args = parser.parse_args()
-    go(args)
+
+    go(
+        input_artifact=args.input_artifact,
+        output_artifact=args.output_artifact,
+        output_type=args.output_type,
+        output_description=args.output_description,
+        min_price=args.min_price,
+        max_price=args.max_price,
+    )
