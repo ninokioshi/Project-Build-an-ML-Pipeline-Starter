@@ -60,11 +60,14 @@ def go(config: DictConfig):
     comp_cleaning   = _abs_path("src/basic_cleaning")
     comp_data_split = _abs_path("src/data_split")
 
+    # Read sample once and propagate as artifact name
+    sample = _get(config, "etl.sample", "sample1.csv")
+    artifact_name = sample  # ensure the artifact we log/consume matches the chosen sample
+
     # -----------------------
     # Step 1 — Download data
     # -----------------------
     if "download" in active_steps:
-        sample = _get(config, "etl.sample", "sample1.csv")
         print(f"[download] sample={sample}")
         try:
             _ = mlflow.run(
@@ -73,7 +76,7 @@ def go(config: DictConfig):
                 env_manager="local",
                 parameters={
                     "sample": sample,
-                    "artifact_name": "sample1.csv",
+                    "artifact_name": artifact_name,  # <- was hardcoded before
                     "artifact_type": "raw_data",
                     "artifact_description": "Raw file as downloaded",
                 },
@@ -95,7 +98,7 @@ def go(config: DictConfig):
                 entry_point="main",
                 env_manager="local",
                 parameters={
-                    "input_artifact": "sample1.csv:latest",
+                    "input_artifact": f"{artifact_name}:latest",  # <- now follows selected sample
                     "output_artifact": "clean_sample.csv",
                     "output_type": "clean_data",
                     "output_description": "Data after basic cleaning",
